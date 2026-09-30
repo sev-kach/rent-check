@@ -4,15 +4,17 @@
 const BASE = 'https://data.sf.gov/resource';
 const ASSESSOR = 'wv5m-vpq2'; // Assessor secured roll
 const COMPLAINTS = 'gm2e-bten'; // DBI complaints
-const TIMEOUT_MS = 8000;
+const SOFT_STORY = 'beah-shgi'; // Mandatory Soft-Story Retrofit Program properties
+const TIMEOUT_MS = 8000; // Assessor lookup (required)
+const EXTRA_TIMEOUT_MS = 3500; // complaints / soft-story (optional): keep the lookup under ~4 s
 const FALLBACK_YEAR = '2025';
 const DISCLAIMER = 'Informational, not legal advice.';
 
 // ---------- HTTP ----------
 
-async function soql(dataset, params) {
+async function soql(dataset, params, timeout = TIMEOUT_MS) {
   const url = `${BASE}/${dataset}.json?${new URLSearchParams(params)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
   if (!res.ok) throw new Error(`${dataset} HTTP ${res.status}`);
   return res.json();
 }
@@ -173,14 +175,33 @@ function summarize(rows) {
   };
 }
 
-// ---------- Rules (SF Rent Ordinance, simplified) ----------
+// "372 7th Ave Apt 5" -> { label: "Apt 5", unit: "5" }; "#2B" -> { label: "#2B", unit: "2B" }
+export function parseUnit(input) {
+  const m = String(input || '').match(
+    /(?:^|[\s,])(#|(?:APT|APARTMENT|UNIT|STE|SUITE)\b\.?\s*#?)\s*([A-Z]?\d+[A-Z]?|[A-Z])(?![\w-])/i,
+  );
+  if (!m) return null;
+  const unit = m[2].toUpperCase();
+  const kind = m[1].replace(/[.#\s]/g, '').toUpperCase();
+  const label = kind ? `${{ APARTMENT: 'Apt', STE: 'Suite' }[kind] || titleCase(kind)} ${unit}` : `#${unit}`;
+  return { unit, label };
+}
 
-export function rentControl({ year_built: year, units, isCondo, use }) {
+// ---------- Rules (SF Rent Ordinance + CA AB 1482, simplified) ----------
+
+const AB1482_TEXT = 'California AB 1482 statewide cap likely applies (5% + CPI, max 10%/yr)';
+
+export function rentControl({ year_built: year, units, isCondo, use }, now = new Date()) {
   if (!year) return { status: 'unknown', reason: 'Year built is not on record.' };
   if (year >= 1979) {
+    // AB 1482 exempts buildings with a certificate of occupancy in the last 15 years (rolling) and single-family homes.
+    const ab1482 = units >= 2 && !isCondo && now.getFullYear() - year > 15;
     return {
       status: 'not_covered',
-      reason: `Built in ${year}, after June 13, 1979: new construction is exempt from SF rent-increase limits; just-cause eviction rules may still apply.`,
+      reason: ab1482
+        ? `Built in ${year}, after June 13, 1979: not under SF Rent Ordinance, but ${AB1482_TEXT}; just-cause eviction rules may also apply.`
+        : `Built in ${year}, after June 13, 1979: new construction is exempt from SF rent-increase limits; just-cause eviction rules may still apply.`,
+      ...(ab1482 && { state_cap: 'AB 1482 likely' }),
     };
   }
   if (isCondo) {
@@ -198,20 +219,121 @@ export function rentControl({ year_built: year, units, isCondo, use }) {
   if (units >= 2) {
     return {
       status: 'likely',
-      reason: `Built in ${year}, before June 13, 1979, with ${units} units: covered by the SF Rent Ordinance (rent-increase limits and just-cause eviction).`,
+      reason: `Built in ${year}, before June 13, 1979, with ${units} units: likely covered by the SF Rent Ordinance (rent-increase limits and just-cause eviction).`,
     };
   }
   return { status: 'unknown', reason: `No residential units on record (use: ${use || 'unknown'}).` };
 }
 
-const STATUS_LABEL = {
-  likely: 'likely',
-  not_covered: 'no (post-1979 construction)',
-  exempt_increases: 'no rent-increase limits (Costa-Hawkins), eviction protections may apply',
-  unknown: 'unknown',
-};
+function rentLabel(rc, year) {
+  if (rc.status === 'likely') return 'Rent-controlled: likely.';
+  if (rc.status === 'not_covered') {
+    return `Rent-controlled: no (built ${year}, after 1979)${rc.state_cap ? ', but state AB 1482 cap likely applies' : ''}.`;
+  }
+  if (rc.status === 'exempt_increases') return 'Rent-controlled: no rent-increase limits (Costa-Hawkins); eviction protections may apply.';
+  return 'Rent-controlled: unknown.';
+}
+
+// Listing says "Apt 5" but the city records 3 legal units -> possible unwarranted unit.
+// Conservative: only small buildings (<= 10 units), only plain numbers; 3-digit numbers (107, 201) are
+// usually floor + unit, so only their last two digits are compared.
+export function unitCheck(claimed, legalUnits, isCondo) {
+  const base = { claimed_unit: claimed?.unit ?? null, legal_units: legalUnits ?? null, flag: false };
+  if (!claimed) return { ...base, note: 'No unit in the query.' };
+  const { unit, label } = claimed;
+  if (!legalUnits) return { ...base, note: `${label}: no residential unit count on record, not checked.` };
+  if (isCondo) return { ...base, note: `${label}: condominium parcels, not checked.` };
+  if (!/^\d+$/.test(unit)) return { ...base, note: `${label}: not a plain number, not checked.` };
+  if (legalUnits > 10) {
+    return { ...base, note: `${label}: ${legalUnits}-unit building, unit numbers are often floor-based, not checked.` };
+  }
+  const n = parseInt(unit, 10);
+  const idx = n >= 100 ? n % 100 : n;
+  if (idx > legalUnits) {
+    return {
+      ...base,
+      flag: true,
+      note: `Possible unwarranted unit — listing says ${label}, city records show ${legalUnits} legal unit${legalUnits === 1 ? '' : 's'}.`,
+    };
+  }
+  return { ...base, note: `${label} is consistent with ${legalUnits} legal unit${legalUnits === 1 ? '' : 's'}.` };
+}
 
 // ---------- DBI complaints ----------
+
+// Red-flag categories, in verdict priority order. Matched against cleaned, lower-cased complaint text.
+const RED_FLAGS = [
+  ['illegal_units', 'possible illegal units',
+    /\billegal (units?|dwellings?|apartments?|conversion|occupancy)\b|change of use|\bunwarranted\b|\bin-?law\b|\bcommunal\b|\b\d+ rooms\b|\bzoning\b/],
+  ['mold', 'mold', /\bmou?ldy?\b|\bmildew\b/],
+  ['elevator', 'elevator outages', /\belevators?\b|\blift\b/],
+  ['heat_water', 'heating / hot water', /\bno heat\b|\bheat(ing|er|ers)?\b|\bhot water\b|\btemperatures?\b|\bcold\b|\btoo hot\b/],
+  ['pests', 'pests', /\b(rodents?|rats?|mice|mouse|roach(es)?|cockroach(es)?|bed ?bugs?|vermin|infestation)\b/],
+  ['unpermitted_work', 'unpermitted work',
+    /\bw(ithout|\/o)( a| any)? permits?\b|\bno permits?\b|\bunpermitted\b|\bnot permitted\b|\billegal (retaining wall|construction|addition|work)\b/],
+  ['safety', 'fire / safety hazards', /\bfire\b|\bsmoke detectors?\b|\bexits?\b|\bdangerous\b|\bhazard(s|ous)?\b|\bcarbon monoxide\b|\bgas leak\b/],
+];
+// Negated phrases that would otherwise match ("free of any visible hazards").
+const NEGATIONS = /\b(free of|no|without)( any)?( visible| obvious)? hazards?\b/g;
+
+const PHONE = /(?<![\w\d])(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)/g;
+const EMAIL = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
+
+export function redact(s) {
+  return String(s || '').replace(EMAIL, '[email]').replace(PHONE, '[phone]');
+}
+
+// 311 web-form complaints start with "Date last observed: ...; building type: residence/dwelling <problem>; ...".
+// Keep only the problem part and the free-text "additional information".
+function cleanDescription(raw) {
+  let s = redact(raw).replace(/\s+/g, ' ').trim();
+  const form = s.match(/^date last observed:.*?building type:\s*(?:residence\/dwelling|commercial\/business|commercial|both|other|unknown)?\s*(.*)$/i);
+  if (form) {
+    s = form[1].replace(/\s*;\s*;\s*/g, '; ').replace(/;?\s*additional information:\s*/i, ' — ').replace(/[;\s]+$/, '');
+  }
+  return s;
+}
+
+const isRoutine = (desc, novType) => /^routine\b/i.test(desc) || (!desc && /routine/i.test(novType || ''));
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
+}
+
+// A ~160-char excerpt that shows the matched keyword.
+function excerpt(s, re, n = 160) {
+  const i = s.toLowerCase().search(re);
+  if (i < n - 40) return truncate(s, n);
+  return truncate('…' + s.slice(Math.max(0, i - 40)).trimStart(), n);
+}
+
+function yearsText(dates) {
+  const ys = [...new Set(dates.map((d) => Number(d.slice(0, 4))).filter(Boolean))].sort();
+  if (ys.length <= 2) return ys.join(', ');
+  return `${ys[0]}–${ys.at(-1)}`;
+}
+
+export function redFlags(complaints) {
+  const flags = [];
+  for (const [category, label, re] of RED_FLAGS) {
+    const hits = complaints.filter((c) => !c.routine && re.test(c.text.toLowerCase().replace(NEGATIONS, '')));
+    if (!hits.length) continue;
+    // Examples: most recent first, preferring plain-language complaints over 311 form dumps.
+    const examples = [...hits]
+      .sort((a, b) => a.form - b.form || b.date.localeCompare(a.date))
+      .slice(0, 2)
+      .map((c) => ({ date: c.date, description: excerpt(c.text, re) }));
+    flags.push({
+      category,
+      label,
+      count: hits.length,
+      latest_date: hits.map((c) => c.date).sort().at(-1) || null,
+      years: yearsText(hits.map((c) => c.date)),
+      examples,
+    });
+  }
+  return flags;
+}
 
 async function getComplaints(building, number) {
   // Condo complaints are often filed on the original lot, so match the block + street number too.
@@ -219,29 +341,58 @@ async function getComplaints(building, number) {
   const blocks = list(building.parcels.map((p) => p.slice(0, 4)));
   const numbers = list([number, building.loc.lo, building.loc.hi].filter(Boolean).map(String));
   const where = `block in (${blocks}) AND (parcel_number in (${list(building.parcels.slice(0, 300))}) OR street_number in (${numbers}))`;
-  const [byStatus, latest] = await Promise.all([
-    soql(COMPLAINTS, { $select: 'status,count(*) AS n', $where: where, $group: 'status' }),
-    soql(COMPLAINTS, {
-      $select: 'date_filed,status,complaint_description',
-      $where: where,
-      $order: 'date_filed DESC',
-      $limit: '3',
-    }),
-  ]);
-  const count = (pred) => byStatus.filter(pred).reduce((s, r) => s + Number(r.n), 0);
-  return {
-    total: count(() => true),
-    open: count((r) => r.status === 'Active'),
-    latest: latest.map((c) => ({
+  const rows = await soql(COMPLAINTS, {
+    $select: 'date_filed,status,nov_type,complaint_description',
+    $where: where,
+    $order: 'date_filed DESC',
+    $limit: '5000',
+  }, EXTRA_TIMEOUT_MS);
+  const all = rows.map((c) => {
+    const raw = (c.complaint_description || '').trim();
+    const text = cleanDescription(raw);
+    return {
       date: (c.date_filed || '').slice(0, 10),
       status: c.status || null,
-      description: truncate((c.complaint_description || '').replace(/\s+/g, ' ').trim(), 140),
-    })),
+      text,
+      form: /^date last observed:/i.test(raw) ? 1 : 0,
+      routine: isRoutine(text, c.nov_type),
+    };
+  });
+  return {
+    total: all.length,
+    problems: all.filter((c) => !c.routine).length,
+    open: all.filter((c) => c.status === 'Active').length,
+    latest: all.slice(0, 3).map((c) => ({ date: c.date, status: c.status, description: truncate(c.text, 140) })),
+    red_flags: redFlags(all),
   };
 }
 
-function truncate(s, n) {
-  return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
+// ---------- Soft-story retrofit program ----------
+
+async function getSoftStory(building) {
+  // The dataset sometimes drops the lot's leading zeros ("161820" for block 1618, lot 020).
+  const ids = building.parcels.slice(0, 100).flatMap((p) => [p, p.slice(0, 4) + p.slice(4).replace(/^0+/, '')]);
+  const rows = await soql(SOFT_STORY, {
+    $select: 'parcel_number,status,tier',
+    $where: `parcel_number in (${[...new Set(ids)].map(q).join(',')})`,
+    $limit: '10',
+  }, EXTRA_TIMEOUT_MS);
+  if (!rows.length) return { on_list: false, status: null, retrofit_complete: null };
+  const r = rows.find((x) => /complete/i.test(x.status || '')) || rows[0];
+  const status = r.status || null;
+  return {
+    on_list: true,
+    status,
+    retrofit_complete: /work complete/i.test(status || ''),
+    tier: r.tier || null,
+  };
+}
+
+function softStoryText(ss) {
+  if (!ss?.on_list) return '';
+  if (ss.retrofit_complete) return ' Soft-story retrofit: complete.';
+  if (/non-compliant/i.test(ss.status || '')) return ' ⚠ Soft-story retrofit: NOT done (non-compliant).';
+  return ` Soft-story retrofit: ${ss.status || 'status unknown'}.`;
 }
 
 // ---------- Public API ----------
@@ -268,15 +419,31 @@ export async function checkAddress(address) {
 
   const b = summarize(rows);
   const rent_control = rentControl(b);
+  const unit_check = unitCheck(parseUnit(address_query), b.units, b.isCondo);
 
-  let complaints;
-  try {
-    complaints = await getComplaints(b, addr.number);
-  } catch (err) {
-    complaints = { total: null, open: null, latest: [], error: `DBI complaints unavailable: ${err.message}` };
+  const [complaintsRes, softRes] = await Promise.allSettled([getComplaints(b, addr.number), getSoftStory(b)]);
+  const { red_flags = [], ...complaints } = complaintsRes.status === 'fulfilled'
+    ? complaintsRes.value
+    : { total: null, problems: null, open: null, latest: [], error: `DBI complaints unavailable: ${complaintsRes.reason?.message}` };
+  const soft_story = softRes.status === 'fulfilled' ? softRes.value : null;
+
+  // Verdict: short and demo-ready.
+  const parts = [];
+  if (unit_check.flag) parts.push(`⚠ Possible unwarranted unit: listing says ${parseUnit(address_query).label}, city shows ${b.units} legal units.`);
+  const clean = !unit_check.flag && complaints.problems === 0 && !/⚠/.test(softStoryText(soft_story));
+  parts.push(`${clean ? '✅ ' : ''}${rentLabel(rent_control, b.year_built)} ${b.units} unit${b.units === 1 ? '' : 's'}.`);
+  if (red_flags.length) {
+    parts.push(`⚠ Red flags: ${red_flags.slice(0, 3).map((f) => `${f.label} (${f.years})`).join(', ')}.`);
+  } else if (complaints.problems === 0) {
+    parts.push('No problem complaints on record.');
+  } else if (complaints.problems === null) {
+    parts.push('Complaint history unavailable.');
+  } else {
+    parts.push(`${complaints.problems} complaint${complaints.problems === 1 ? '' : 's'} on record, no red flags.`);
   }
+  if (complaints.open) parts.push(`Open complaints: ${complaints.open}.`);
+  const verdict = parts.join(' ') + softStoryText(soft_story);
 
-  const openText = complaints.open === null ? 'unavailable' : complaints.open === 0 ? 'none' : String(complaints.open);
   return {
     address_query,
     found: true,
@@ -287,9 +454,16 @@ export async function checkAddress(address) {
     use: b.use,
     zoning: b.zoning,
     rent_control,
+    unit_check,
     complaints,
-    verdict: `Rent-controlled: ${STATUS_LABEL[rent_control.status]}. Units: ${b.units}. Open complaints: ${openText}.`,
-    sources: [`SF Assessor secured roll ${year} (${ASSESSOR})`, `DBI complaints (${COMPLAINTS})`],
+    red_flags,
+    soft_story,
+    verdict,
+    sources: [
+      `SF Assessor secured roll ${year} (${ASSESSOR})`,
+      `DBI complaints (${COMPLAINTS})`,
+      `Soft-story retrofit program (${SOFT_STORY})`,
+    ],
     disclaimer: DISCLAIMER,
   };
 }
