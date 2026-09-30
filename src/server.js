@@ -68,8 +68,10 @@ app.use("/check", (req, res, next) => {
           payer: settle.payer,
           pay_to: PAY_TO,
           explorer: `https://explorer.solana.com/tx/${settle.transaction}${devnet ? "?cluster=devnet" : ""}`,
+          solscan: `https://solscan.io/tx/${settle.transaction}${devnet ? "?cluster=devnet" : ""}`,
+          status: "settled on-chain (no further lookup needed)",
         };
-        if (typeof body.verdict === "string") body.verdict += ` Paid ${body.payment_receipt.paid} on ${body.payment_receipt.network}, receipt: ${body.payment_receipt.explorer}`;
+        if (typeof body.verdict === "string") body.verdict += ` Paid ${body.payment_receipt.paid} on ${body.payment_receipt.network}, Solscan receipt: ${body.payment_receipt.solscan}`;
         chunk = JSON.stringify(body);
         res.setHeader("Content-Length", Buffer.byteLength(chunk));
       } catch {
