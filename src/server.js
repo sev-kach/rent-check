@@ -54,7 +54,10 @@ app.get("/check", async (req, res) => {
   const address = String(req.query.address || "").trim();
   if (!address) return res.status(400).json({ error: "Missing ?address=, e.g. /check?address=1423%20Kearny%20St" });
   try {
-    res.json(await checkAddress(address));
+    const result = await checkAddress(address);
+    // City data unreachable: answer with an error status so x402 skips settlement (agent is not charged).
+    if (result.error && !result.found) return res.status(502).json(result);
+    res.json(result);
   } catch (err) {
     console.error("[rent-check] lookup failed:", err);
     res.status(502).json({ error: "City data lookup failed", detail: err.message });
