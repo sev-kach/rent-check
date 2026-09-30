@@ -26,8 +26,24 @@ try {
   console.warn("[rent-check] src/data.js not found, serving FAKE data");
 }
 
-const facilitators = [new HTTPFacilitatorClient({ url: FACILITATOR_URL })];
-if (MAINNET) facilitators.push(new HTTPFacilitatorClient({ url: MAINNET_FACILITATOR_URL }));
+// On a cold start the paywall first asks the facilitator which payment kinds it supports. One dropped connection
+// there used to fail the whole request with a 500, so retry that lookup (it has no side effects) a few times.
+class RetryingFacilitatorClient extends HTTPFacilitatorClient {
+  async getSupported() {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await super.getSupported();
+      } catch (err) {
+        if (attempt >= 4) throw err;
+        console.warn(`[rent-check] facilitator /supported failed (attempt ${attempt}), retrying:`, err.message);
+        await new Promise((r) => setTimeout(r, 250 * attempt));
+      }
+    }
+  }
+}
+
+const facilitators = [new RetryingFacilitatorClient({ url: FACILITATOR_URL })];
+if (MAINNET) facilitators.push(new RetryingFacilitatorClient({ url: MAINNET_FACILITATOR_URL }));
 const resourceServer = new x402ResourceServer(facilitators).register(NETWORK, new ExactSvmScheme());
 if (MAINNET) resourceServer.register(MAINNET_NETWORK, new ExactSvmScheme());
 
