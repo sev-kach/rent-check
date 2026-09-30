@@ -64,3 +64,11 @@ Verdict shapes:
 
 Privacy: phone numbers and emails in complaint text are replaced with "[phone]" / "[email]".
 Performance: 1 Assessor query, then complaints + soft-story in parallel (3.5 s timeout each, optional); ~0.5-1.5 s per lookup.
+
+## Fields added later
+
+- `size_check`: `{ claimed_sqft, building_sqft, avg_unit_sqft_incl_common, flag, note }`. The claimed size comes from `?sqft=` or from text like "listed as 700 sq ft". `flag` is true when the claim is above building sq ft ÷ units, which already includes hallways.
+- `complaints.open_since`: date of the oldest complaint that is still open.
+- `complaints.open_items`: up to 3 open complaints, as `{ date, description }`.
+- `red_flags[].category` is one of: `illegal_units`, `mold`, `water_sewage`, `structural`, `elevator`, `heat_water`, `electrical`, `safety`, `pests`, `security`, `accessibility`, `unpermitted_work`, `construction`.
+- `payment_receipt` (added by the server on paid 200 responses): `{ paid, network, transaction, payer, pay_to, explorer, solscan, status }`. The Solscan link is also appended to `verdict`.

@@ -1,153 +1,248 @@
 # rent-check
 
-**Live API (Solana devnet):** https://rent-check-eight.vercel.app — `GET /check?address=1423%20Kearny%20St` returns HTTP 402 until paid ($0.05 USDC via x402).
-Try it: `API_URL=https://rent-check-eight.vercel.app npm run demo -- "1423 Kearny St"`
+**City records for renters, sold to AI agents for 5 cents a call.**
 
-**Is this San Francisco building rent-controlled?** A pay-per-call API for AI agents. An agent sends an address, pays $0.05 in USDC via [x402](https://x402.org) on Solana devnet, and gets back a verdict with the evidence behind it.
+An AI agent sends a San Francisco address, pays **$0.05 in USDC on Solana** via [x402](https://x402.org), and gets back whether the building is rent-controlled, its legal unit count, its real size and red flags from building complaints. There's no API key, no account and no sign-up: the agent pays per request, on its own.
 
-Why would an agent pay for this instead of scraping it itself? The public data is there, but it is awkward to use. The Assessor roll does not say "1423 Kearny St". It says `1423 1413 KEARNY              ST0000`: a house-number range with the high number first, a padded street name, a suffix code and a unit number. Numbered streets appear both as `03RD AV` and as `3RD ST`, and a condo tower is 112 separate parcels. A good answer needs two datasets (the Assessor secured roll and the DBI complaints), and then SF's rent rules on top: buildings first occupied after June 1979 are not covered, and single-family homes and condos are exempt from rent-increase limits under Costa-Hawkins. rent-check handles all of this and returns one clean JSON answer for five cents, without an API key or an account.
+[![Demo video](https://img.youtube.com/vi/gvvUIVtCrL4/maxresdefault.jpg)](https://www.youtube.com/watch?v=gvvUIVtCrL4)
 
-## Quick start
+▶ **Demo video:** https://www.youtube.com/watch?v=gvvUIVtCrL4
+🌐 **Live API (Solana devnet):** https://rent-check-eight.vercel.app
+
+---
+
+## The problem
+
+A rental listing shows photos, a price and a square footage. A renter actually needs to know three things the listing never says:
+
+1. **Is the unit rent-controlled?** In San Francisco that decides whether the rent can rise by 1–2% a year or by any amount.
+2. **Is it as big as advertised, and is it a legal unit?** Inflated square footage and unpermitted in-law units are common.
+3. **Does the building have a history of problems?** Broken heat, mold, sewage leaks, a dead elevator, or complaints the landlord never fixed.
+
+All of this is in **public city records**, but it's spread across several databases in formats that are hard to use, even for an AI agent. The Assessor roll doesn't say "1423 Kearny St". It says `1423 1413 KEARNY              ST0000`: a house-number range, a padded street name, a suffix code and a unit field.
+
+## The solution
+
+rent-check turns those records into **one reliable answer that any agent can buy on its own**:
+
+```text
+Agent → GET /check?address=300 Anzavista Ave
+API   → 402 Payment Required: $0.05 USDC on Solana
+Agent → signs the payment with its own wallet and retries
+API   → 200 OK: verdict + evidence + Solana receipt
+```
+
+Example verdict (live data):
+
+> ⚠ Size looks inflated: listing says 700 sq ft, city records suggest under 640. Rent-controlled: likely. 8 units. ⚠ Red flags: mold (2023), sewage / flooding / leaks (2001–2020), structural damage (2018, 2019). ⚠ 2 complaints open since 2018, never closed. Soft-story retrofit: complete. Paid 0.05 USDC on Solana devnet, Solscan receipt: https://solscan.io/tx/…
+
+## Why an agent would pay: measured
+
+We gave the same question about the same apartment to the same Claude model twice: once with rent-check, and once researching from scratch with only web and public-data tools.
+
+| | **Claude + rent-check** | **Claude from scratch** | |
+|---|---|---|---|
+| Time to answer | **19 s** | 119 s | **6× faster** |
+| API cost of the run | **$0.19** (incl. the $0.05 fee) | $0.56 | **3× cheaper** |
+| Agent steps | **3** | 14 | **5× fewer** |
+
+Both answers were correct. The difference is that rent-check did the research once, and every agent reuses it for 5 cents. *(Measured Sep 30, 2026 with Claude Code, `--output-format json`, Claude Opus 5.5. Cost is Claude Code's reported `total_cost_usd`. One run each.)*
+
+## Try it with a real AI agent
+
+The demo uses [**pay.sh**](https://github.com/solana-foundation/pay) from the Solana Foundation. It gives Claude Code its own stablecoin wallet and handles x402 payments automatically.
+
+```bash
+npm install -g @solana/pay     # or: brew install pay
+pay setup                      # creates the agent's wallet
+# fund the devnet wallet with test USDC at https://faucet.circle.com (network: Solana Devnet)
+mkdir -p ~/renter && cd ~/renter && pay claude
+```
+
+Then ask:
+
+```text
+I'm about to rent 300 Anzavista Ave, San Francisco, listed as 700 sq ft. Is it rent-controlled,
+how big is it really, and are there any red flags in city building complaints?
+There's a paid API: https://rent-check-eight.vercel.app/check?address=<address> ($0.05 via x402).
+Use your pay tools. At the end provide a link to Solanascan receipt.
+```
+
+Claude calls the API, gets the 402, pays 5 cents from its wallet, and answers with the evidence and a Solscan receipt. No human approves the payment.
+
+### Demo addresses
+
+| Address | What city records show |
+|---|---|
+| **640 28th Ave** (Outer Richmond) | Legally 5 units, rent-controlled. A 2012 complaint: "Illegal unit in back of bldg… 6 electrical meters for a 5 unit bldg." |
+| **1300 26th Ave** (Sunset) | 29 units, rent-controlled. 36 complaints; the elevator has been down since September 2026. |
+| **1777 Pine St** (Lower Pacific Heights) | 39 units, retrofit done. Black-water flood (2025), sewer gas (2023), mold (2022), ceiling collapse (2021). |
+| **300 Anzavista Ave** (listed as 700 sq ft) | 8 units in 5,120 sq ft, so about 640 sq ft each including hallways. 2 complaints open since 2018: exposed wires, broken heater, bad locks. |
+| **130 5th Ave** (Inner Richmond) | 6 units, rent-controlled, only routine inspections. The clean pass: the tool doesn't flag everything. |
+
+---
+
+## Technical description
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant A as AI agent (pay claude)
+    participant W as Agent wallet (pay.sh)
+    participant API as rent-check (Vercel)
+    participant F as x402 facilitator
+    participant S as Solana devnet
+    participant D as data.sf.gov
+
+    A->>API: GET /check?address=…
+    API-->>A: 402 + PAYMENT-REQUIRED (0.05 USDC, payTo, feePayer)
+    A->>W: sign USDC transfer
+    W-->>A: signed payment
+    A->>API: GET /check + PAYMENT-SIGNATURE
+    API->>F: verify payment
+    API->>D: Assessor roll + DBI complaints + soft-story list (parallel)
+    API->>F: settle (only if the lookup succeeded)
+    F->>S: submit transfer (facilitator pays SOL fees)
+    API-->>A: 200 verdict JSON + payment_receipt (tx, Solscan link)
+```
+
+| Layer | Technology |
+|---|---|
+| API server | Node.js, Express, deployed as a Vercel serverless function (`api/index.js`) |
+| Payments | x402 v2 (`@x402/express`, `@x402/svm`, `@x402/core`), scheme `exact`, $0.05 USDC |
+| Network | Solana devnet (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`). Mainnet support exists behind `MAINNET=1`, using the PayAI facilitator |
+| Facilitator | `https://x402.org/facilitator`. It verifies and settles payments and pays the SOL fees, so agents only hold USDC |
+| Data | San Francisco open data (Socrata SoQL), live, with no API key |
+| Agent client | pay.sh (`pay claude`, MCP tool `mcp__pay__curl`), or the included `@x402/fetch` buyer script |
+
+### Payment flow details
+
+- **402 challenge:** an unpaid `GET /check` returns HTTP 402 with a base64 `PAYMENT-REQUIRED` header: x402 version 2, scheme `exact`, amount `50000` (0.05 USDC, 6 decimals), asset `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC), `payTo` = the seller wallet, `extra.feePayer` = the facilitator.
+- **Pay only for success:** settlement runs after the handler. If the address is missing (400) or the city data is unreachable (502), nothing settles and the agent isn't charged.
+- **Receipt in the body:** x402 normally returns the settlement only in the `PAYMENT-RESPONSE` header, which many agent tools never show the model. rent-check copies it into the JSON as `payment_receipt` (transaction, payer, Explorer and Solscan links) and appends the Solscan link to `verdict`, so agents always show a receipt.
+- **Hardening:**
+  - `HEAD /check` is blocked so the paid handler can't run unpaid.
+  - The facilitator's `/supported` lookup is retried on cold starts.
+  - The seller only needs its public address on the server. No private key is deployed.
+
+### Data pipeline (`src/data.js`)
+
+1. **Address parsing:** free text ("300 anzavista avenue, San Francisco, CA 94115", "372 7th Ave Apt 5", "Nineteenth Ave") becomes a house number, a normalized street, the suffix, the unit and an optional listing size ("listed as 700 sq ft" or `?sqft=700`).
+2. **Parcel match** in the Assessor secured roll (`wv5m-vpq2`, latest roll year):
+   - It filters by street on the server, then matches the house number inside number ranges such as `0314 0300 ANZAVISTA AV`, preferring the same side of the street.
+   - It handles both forms of numbered streets (`03RD AV` / `3RD ST`).
+   - It aggregates condo buildings that are stored as many parcels.
+3. **Complaints:** the building's full DBI history (`gm2e-bten`), matched by parcel, and by block plus street number for condo lots. Routine inspections are separated from real problems. It also counts open complaints and when the oldest one was filed.
+4. **Red-flag engine:** keyword rules over the cleaned complaint text in 13 categories:
+   - illegal units, mold, sewage/flooding/leaks, structural damage, elevator, heat/hot water, electrical, fire/safety, pests, locks/security, accessibility, unpermitted work, construction disruption.
+   - Ranking: illegal units first, then anything from the last two years, then the rest by severity. A flag is skipped when it only repeats complaints already shown.
+   - Phone numbers and emails are redacted.
+5. **Soft-story retrofit status** from the city's earthquake-retrofit list (`beah-shgi`).
+6. **Rules:**
+   - SF Rent Ordinance: built before June 13, 1979 with 2 or more units means **likely** rent-controlled.
+   - Costa-Hawkins: single-family homes and condos are exempt from increase limits.
+   - Post-1979 buildings are noted as **AB 1482** (the California statewide cap), where it applies.
+7. **Listing checks:**
+   - *Unit check:* a unit number higher than the legal unit count flags a possible unwarranted unit.
+   - *Size check:* building sq ft ÷ units gives an upper bound per unit, including hallways.
+8. **Verdict:** one plain-English line with the three most relevant flags, plus the full evidence as JSON.
+
+A lookup takes about 0.5–1.5 s; complaints and soft-story are fetched in parallel.
+
+### API
+
+| Endpoint | Price | Response |
+|---|---|---|
+| `GET /check?address=…[&sqft=700]` | $0.05 USDC via x402 | verdict JSON (below) |
+| `GET /health` | free | `{"ok":true}` |
+| `GET /` | free | service description |
+
+<details>
+<summary>Example response (300 Anzavista Ave, listed as 700 sq ft)</summary>
+
+```json
+{
+  "address_query": "300 Anzavista Ave",
+  "found": true,
+  "matched_address": "300-314 Anzavista Ave",
+  "parcel": "1104014",
+  "year_built": 1952,
+  "units": 8,
+  "use": "Multi-Family Residential",
+  "zoning": "RM1",
+  "rent_control": { "status": "likely", "reason": "Built in 1952, before June 13, 1979, with 8 units: likely covered by the SF Rent Ordinance (rent-increase limits and just-cause eviction)." },
+  "unit_check": { "claimed_unit": null, "legal_units": 8, "flag": false, "note": "No unit in the query." },
+  "size_check": { "claimed_sqft": 700, "building_sqft": 5120, "avg_unit_sqft_incl_common": 640, "flag": true,
+    "note": "Listing says 700 sq ft. City records: 5,120 sq ft building ÷ 8 units ≈ 640 sq ft each including hallways, so a typical unit is about 540–600 sq ft." },
+  "complaints": { "total": 14, "problems": 14, "open": 2, "open_since": "2018-02-26",
+    "open_items": [{ "date": "2018-03-13", "description": "Maintenance issues through-out common areas" }],
+    "latest": [{ "date": "2023-07-06", "status": "Not Active", "description": "No heat, egress window is painted shut, peeling paint, mold/mildew." }] },
+  "red_flags": [
+    { "category": "mold", "label": "mold", "count": 1, "latest_date": "2023-07-06", "years": "2023",
+      "examples": [{ "date": "2023-07-06", "description": "No heat, egress window is painted shut, peeling paint, mold/mildew." }] },
+    { "category": "water_sewage", "label": "sewage / flooding / leaks", "count": 4, "latest_date": "2020-02-04", "years": "2001–2020",
+      "examples": [{ "date": "2020-02-04", "description": "Plumbing leak to the downstair unit #308" }] }
+  ],
+  "soft_story": { "on_list": true, "status": "Work Complete, CFC Issued", "retrofit_complete": true, "tier": "3" },
+  "verdict": "⚠ Size looks inflated: listing says 700 sq ft, city records suggest under 640. Rent-controlled: likely. 8 units. ⚠ Red flags: mold (2023), sewage / flooding / leaks (2001–2020), structural damage (2018, 2019). ⚠ 2 complaints open since 2018, never closed. Soft-story retrofit: complete. Paid 0.05 USDC on Solana devnet, Solscan receipt: https://solscan.io/tx/…?cluster=devnet",
+  "sources": ["SF Assessor secured roll 2025 (wv5m-vpq2)", "DBI complaints (gm2e-bten)", "Soft-story retrofit program (beah-shgi)"],
+  "disclaimer": "Informational, not legal advice.",
+  "payment_receipt": {
+    "paid": "0.05 USDC", "network": "Solana devnet", "transaction": "62f5kZ…APZGi",
+    "payer": "5U3fYTxWmvjcv2dbssiMieTyD6jPxX96FpDqd8mLys1q", "pay_to": "FxPJuxgDxkLoRYSU25Jm3WDK1aX9e4TnpLk7YEz2HWNp",
+    "explorer": "https://explorer.solana.com/tx/…?cluster=devnet", "solscan": "https://solscan.io/tx/…?cluster=devnet",
+    "status": "settled on-chain (no further lookup needed)"
+  }
+}
+```
+</details>
+
+The full field list is in [CONTRACT.md](CONTRACT.md).
+
+### Run it yourself
 
 Requires Node 20 or newer.
 
 ```bash
 npm install
-npm run wallets          # creates buyer + seller devnet keypairs in .env and prints what is still missing
+npm run wallets        # creates buyer + seller devnet keypairs in .env (gitignored)
 ```
 
-**Faucet step (manual, once):** go to https://faucet.circle.com, choose **Solana Devnet** and request USDC for:
-
-- the **buyer** address that `npm run wallets` printed. It pays for the calls; 10 USDC is plenty. It needs no SOL because the facilitator pays the fees.
-- the **seller** address. The seller must have a USDC token account before it can be paid, and receiving faucet USDC creates that account. The other way: get devnet SOL at https://faucet.solana.com for the seller, then run `npm run wallets` again and it creates the account itself.
+Fund both addresses with devnet USDC at https://faucet.circle.com (choose **Solana Devnet**). The seller needs a USDC account to receive payments, and receiving faucet USDC creates it.
 
 ```bash
-npm start                               # http://localhost:4021
-npm run demo -- "1423 Kearny St"        # agent: gets the 402, pays, prints the verdict and the Solana tx link
-npm run test:data                       # tests the live data layer on 5 addresses (no payment)
+npm start                              # paid API on http://localhost:4021
+npm run demo -- "1665 Chestnut St"     # buyer script: shows the 402, pays, prints verdict + tx link
+npm run demo:web                       # local visual demo: agent chat, live x402 steps, verdict card
+npm run test:data                      # data-layer tests against live city data (no payment)
 ```
 
-## API
+**Deploy:** `vercel deploy --prod`. Set `SELLER_ADDRESS`, `NETWORK` and `FACILITATOR_URL` in Vercel (plus `MAINNET=0` for devnet only). Never upload private keys, because the server only needs the seller's public address.
 
-| Endpoint | Price | Response |
-|---|---|---|
-| `GET /health` | free | `{"ok":true}` |
-| `GET /` | free | service description |
-| `GET /check?address=1423%20Kearny%20St` | $0.05 USDC, `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` (devnet) | verdict JSON (below) |
+### Project structure
 
-A call to `/check` without payment returns **HTTP 402**. The `PAYMENT-REQUIRED` header holds the requirements as base64 JSON (x402 v2): scheme `exact`, amount `50000` (0.05 USDC), asset `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC), `payTo` = the seller, and `extra.feePayer` = the facilitator. Any x402 v2 client, such as `@x402/fetch` with `@x402/svm`, can pay it automatically. The receipt comes back in the `PAYMENT-RESPONSE` header.
-
-You are charged only for a successful answer. A missing address (400) or unreachable city data (502) means no settlement.
-
-```json
-{
-  "address_query": "1665 Chestnut St",
-  "found": true,
-  "matched_address": "1665 Chestnut St",
-  "parcel": "0495008",
-  "year_built": 1950,
-  "units": 24,
-  "use": "Multi-Family Residential",
-  "zoning": "RM2",
-  "rent_control": { "status": "likely", "reason": "Built in 1950, before June 13, 1979, with 24 units: likely covered by the SF Rent Ordinance ..." },
-  "unit_check": { "claimed_unit": null, "legal_units": 24, "flag": false, "note": "No unit in the query." },
-  "complaints": { "total": 15, "problems": 13, "open": 0, "latest": [{ "date": "2026-07-21", "status": "Not Active", "description": "The building has wildly inconsistent temperatures. ..." }] },
-  "red_flags": [
-    { "category": "mold", "label": "mold", "count": 3, "latest_date": "2013-03-21", "years": "2013",
-      "examples": [{ "date": "2013-03-18", "description": "Extreme amounts of mold in vacant unit #107 not cleaned properly and safely." }] },
-    { "category": "elevator", "label": "elevator outages", "count": 3, "latest_date": "2024-06-07", "years": "2022–2024", "examples": ["..."] }
-  ],
-  "soft_story": { "on_list": true, "status": "Work Complete, CFC Issued", "retrofit_complete": true, "tier": "2" },
-  "verdict": "Rent-controlled: likely. 24 units. ⚠ Red flags: mold (2013), elevator outages (2022–2024), heating / hot water (2000, 2026). Soft-story retrofit: complete.",
-  "sources": ["SF Assessor secured roll 2025 (wv5m-vpq2)", "DBI complaints (gm2e-bten)", "Soft-story retrofit program (beah-shgi)"],
-  "disclaimer": "Informational, not legal advice."
-}
-```
-
-Full field list: [CONTRACT.md](CONTRACT.md). Phone numbers and emails in complaint text are replaced with `[phone]` / `[email]`.
-
-`rent_control.status` is one of:
-
-- `likely`: built before 1979 with 2 or more units.
-- `not_covered`: built in 1979 or later.
-- `exempt_increases`: a single-family home or a condo. Rent-increase limits do not apply, but eviction protections may.
-- `unknown`: no build year, or no residential units.
-
-If the address is not found, the response is `{"address_query": "...", "found": false, "verdict": "Address not found in SF property records."}`.
-
-Data comes live from `data.sf.gov` (Socrata): Assessor roll `wv5m-vpq2`, DBI complaints `gm2e-bten` and the soft-story retrofit list `beah-shgi`. None needs a token.
-
-## Demo
-
-A local web app for the screen recording and the live pitch. An agent chat is on the left, the x402 protocol steps animate live in the middle, and the purchased verdict card is on the right. The footer shows the agent wallet's USDC balance before and after each call.
-
-```bash
-npm run demo:web                                  # http://localhost:3000, pays the live Vercel API
-API_URL=http://localhost:4021 npm run demo:web    # or pay a local `npm start` instead
-```
-
-It runs **only on your laptop** because it signs payments with `BUYER_PRIVATE_KEY` from `.env`. It listens on 127.0.0.1 and is not part of the Vercel deployment. It pays only on Solana devnet, even though the API also accepts mainnet.
-
-- **Agent: Claude**, used when `ANTHROPIC_API_KEY` is in `.env`. Claude (`claude-sonnet-5-5`, override with `CLAUDE_MODEL`) gets one tool, `check_rent_status(address)`. The system prompt tells it the tool costs $0.05 per call and to use it once per address. The tool runs the x402 payment, and Claude then writes a 3 to 5 sentence answer for the renter. The server caps it at 2 paid calls per question.
-- **Agent: script**, used when there is no key (or with `AGENT_MODE=script`). It takes the address out of the question, calls the paid API directly and fills in a templated answer. The badge in the top right shows which mode is running.
-
-Other settings: `DEMO_PORT` (default 3000) and `SOLANA_RPC_URL`. The code is in `scripts/demo-web.js` (server, SSE stream), `scripts/demo-agent.js` (Claude tool loop and script mode), `scripts/x402-client.js` (the x402 buyer, shared with `npm run demo`) and `src/demo-ui/` (the page).
-
-### Demo cases (one click each)
-
-| Button | City records | The story |
-|---|---|---|
-| **1665 Chestnut St** (Marina) | Built 1950, 24 units, rent-controlled, soft-story retrofit complete. 15 DBI complaints: mold in vacant unit #107 (2013), elevator out 2022–2024, "wildly inconsistent temperatures" (July 2026), no heat (2000). | "It looks perfect in the listing. The agent pays 5 cents and finds mold and a dead elevator." |
-| **372 7th Ave Apt 5** (Inner Richmond) | Built 1993, 3 legal units (NC3, store with flats above). Not under SF rent control; state AB 1482 cap likely. | "The listing says Apt 5. The city says the building has 3 legal units." |
-| **1824 Anza St** (Inner Richmond) | Built 1912, 3 units, rent-controlled, only one routine inspection on file. | The green light: the tool doesn't flag everything. |
-
-### 60-second recording script
-
-Before recording: run `npm run demo:web`, open http://localhost:3000, put the browser in full screen (View, then Enter Full Screen) at 1920x1080, and click each case once to check that it works (each click spends $0.05 of devnet USDC). Reload the page to start clean.
-
-| Time | Do | Say |
-|---|---|---|
-| 0:00 | Idle page. Point at the wallet in the footer. | "Renters ask AI agents about apartments, but the facts are buried in city records. rent-check sells them to any agent for 5 cents a call, with no API key and no account." |
-| 0:08 | Click **1665 Chestnut St**. | "This listing says rent-controlled and retrofitted. The agent calls our API and gets HTTP 402, Payment Required: 5 cents in USDC on Solana." |
-| 0:15 | Point at steps 2 and 3, then the verdict card. | "It signs, pays, and the data comes back. That's a real Solana transaction. Rent-controlled, yes, but mold in unit 107, and the elevator was out from 2022 to 2024." |
-| 0:28 | Click **372 7th Ave Apt 5**. Point at the red banner. | "The listing says Apt 5. The city says the building has 3 legal units. That's a question to ask before you sign." |
-| 0:40 | Click **1824 Anza St**. | "And it doesn't flag everything: built 1912, rent-controlled, clean record." |
-| 0:48 | Click the tx link in step 2 (Solana Explorer opens), then come back. Point at the balance. | "Every answer is paid on-chain, one call at a time. Agents pay for data, and renters get the truth. That's rent-check." |
-
-For the live presentation, if the venue network is unreliable: `AGENT_MODE=script` skips Claude, and `API_URL=http://localhost:4021` with `npm start` skips Vercel. Payments still need Solana devnet and the x402.org facilitator.
-
-## Deploy (Vercel)
-
-`api/index.js` exports the Express app, and `vercel.json` routes every path to it.
-
-```bash
-npx vercel login
-npx vercel deploy          # add --prod when ready
-```
-
-Set these environment variables in Vercel (Project, then Settings, then Environment Variables):
-
-| Variable | Value |
+| Path | What it does |
 |---|---|
-| `SELLER_ADDRESS` | the seller public key from `.env` (required) |
-| `NETWORK` | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` |
-| `FACILITATOR_URL` | `https://x402.org/facilitator` |
+| `src/data.js` | Address parsing, parcel matching, complaints, red flags, rent rules, size and unit checks |
+| `src/server.js` | Express app, x402 paywall, receipt injection, hardening |
+| `api/index.js` | Vercel entry point |
+| `scripts/x402-client.js`, `scripts/demo.js` | x402 buyer (`@x402/fetch` + `@x402/svm`) |
+| `scripts/demo-web.js`, `scripts/demo-agent.js`, `src/demo-ui/` | Local visual demo |
+| `scripts/wallets.js` | Creates and prepares the devnet wallets |
+| `scripts/test-data.js` | 43 checks against live city data |
 
-Do **not** upload private keys to Vercel, because the server only needs the public `SELLER_ADDRESS`. Then point the demo at the deployment:
+## Limitations and next steps
 
-```bash
-API_URL=https://<your-deployment>.vercel.app npm run demo -- "1423 Kearny St"
-```
+- **San Francisco only.** Next: other Bay Area cities with their own rent laws, such as Oakland, Berkeley and Richmond.
+- **"Likely", not certain:** rent-control status comes from build year and unit count. The SF Rent Board has the final word.
+- **Size is an estimate:** the Assessor's building area includes common space.
+- **Next data sources:** building-permit history and Rent Board petitions and evictions.
+- **Discovery:** list rent-check in the pay.sh catalog (`pay-skills`), so agents find it without being told the URL.
+- **Mainnet:** already supported in code (`MAINNET=1`).
 
-## Files
+## Built with
 
-- `src/data.js`: address parsing, Assessor lookup, DBI complaints, rent rules (`checkAddress`).
-- `src/server.js`: the Express app with the x402 paywall.
-- `api/index.js`: the Vercel entry point.
-- `scripts/wallets.js`: creates and funds the devnet wallets.
-- `scripts/demo.js`: the agent buyer.
-- `scripts/test-data.js`: data-layer checks.
+x402 · Solana · pay.sh (Solana Foundation) · Claude Code (Anthropic) · Vercel · DataSF open data
 
-Secrets live in `.env` and `wallets/`. Both are gitignored.
-
-*Informational, not legal advice.*
+*Informational only, not legal advice.*
