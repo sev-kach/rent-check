@@ -125,7 +125,7 @@ async function findRows(addr, year) {
     `(${lo}=${n} OR ${hi}=${n} OR (${lo}<=${n} AND ${hi}>=${n}) OR (${hi}!='0000' AND ${hi}<=${n} AND ${lo}>=${n}))`,
   ].join(' AND ');
   const rows = await soql(ASSESSOR, {
-    $select: 'property_location,parcel_number,year_property_built,number_of_units,use_definition,property_class_code_definition,zoning_code',
+    $select: 'property_location,parcel_number,year_property_built,number_of_units,property_area,use_definition,property_class_code_definition,zoning_code',
     $where: where,
     $limit: '2000',
   });
@@ -172,7 +172,25 @@ function summarize(rows) {
     isCondo,
     use: isCondo ? 'Condominium' : primary.use_definition || null,
     zoning: primary.zoning_code || null,
+    building_sqft: Math.round(rows.reduce((sum, r) => sum + (parseFloat(r.property_area) || 0), 0)) || null,
   };
+}
+
+// "…listed as 700 sq ft" -> 700
+export function parseSqft(input) {
+  const m = String(input || '').match(/\b(\d{3,4}|\d,\d{3})\s*(?:sq\.?\s*ft|sqft|square\s*feet|sf)\b/i);
+  return m ? Number(m[1].replace(',', '')) : null;
+}
+
+// The Assessor's building area includes hallways and stairs, so area ÷ units is an upper bound on a typical unit.
+export function sizeCheck(claimed, buildingSqft, units, isCondo) {
+  const per_unit = buildingSqft && units && !isCondo ? Math.round(buildingSqft / units) : null;
+  const base = { claimed_sqft: claimed, building_sqft: buildingSqft, avg_unit_sqft_incl_common: per_unit, flag: false };
+  if (!claimed || !per_unit) return { ...base, note: claimed ? 'Not enough city data to check the size.' : 'No listing size given.' };
+  const lo = Math.round((per_unit * 0.85) / 10) * 10;
+  const hi = Math.round((per_unit * 0.93) / 10) * 10;
+  const note = `Listing says ${claimed} sq ft. City records: ${buildingSqft.toLocaleString('en-US')} sq ft building ÷ ${units} units ≈ ${per_unit} sq ft each including hallways, so a typical unit is about ${lo}–${hi} sq ft.`;
+  return { ...base, flag: claimed > per_unit, note };
 }
 
 // "372 7th Ave Apt 5" -> { label: "Apt 5", unit: "5" }; "#2B" -> { label: "#2B", unit: "2B" }
@@ -261,17 +279,26 @@ export function unitCheck(claimed, legalUnits, isCondo) {
 
 // ---------- DBI complaints ----------
 
-// Red-flag categories, in verdict priority order. Matched against cleaned, lower-cased complaint text.
+// Red-flag categories, in severity order (health and safety first). Matched against cleaned, lower-cased complaint text.
 const RED_FLAGS = [
   ['illegal_units', 'possible illegal units',
     /\billegal (units?|dwellings?|apartments?|conversion|occupancy)\b|change of use|\bunwarranted\b|\bin-?law\b|\bcommunal\b|\b\d+ rooms\b|\bzoning\b/],
   ['mold', 'mold', /\bmou?ldy?\b|\bmildew\b/],
+  ['water_sewage', 'sewage / flooding / leaks',
+    /\bsewer\b|\bsewage\b|\bblack water\b|\bflood(s|ed|ing)?\b|\bleak(s|ed|ing|y)?\b|\bwater damage\b|\bbacked up\b|\boverflow(s|ing)?\b/],
+  ['structural', 'structural damage',
+    /\bcollaps(e|ed|es|ing)\b|\bspalling\b|\bstructural\b|\bcracks? in (the )?(wall|foundation|ceiling)s?\b|\bsagging\b|\bdry ?rot\b|\bceiling (fell|falling)\b/],
   ['elevator', 'elevator outages', /\belevators?\b|\blift\b/],
   ['heat_water', 'heating / hot water', /\bno heat\b|\bheat(ing|er|ers)?\b|\bhot water\b|\btemperatures?\b|\bcold\b|\btoo hot\b/],
+  ['electrical', 'electrical hazards', /\bexposed wir(e|es|ing)\b|\belectrical\b|\bwiring\b|\boutlets?\b|\bsparks?\b|\bno power\b|\bmeters?\b/],
+  ['safety', 'fire / safety hazards', /\bfire\b|\bsmoke detectors?\b|\bexits?\b|\bdangerous\b|\bhazard(s|ous)?\b|\bcarbon monoxide\b|\bgas leak\b/],
   ['pests', 'pests', /\b(rodents?|rats?|mice|mouse|roach(es)?|cockroach(es)?|bed ?bugs?|vermin|infestation)\b/],
+  ['security', 'locks / security', /\b(door|gate)s?\b[^.;]{0,40}\block(s|ed|ing)?\b|\bdoes(n'?t| not)( always)? lock\b|\bbroken locks?\b|\bintercom\b/],
+  ['accessibility', 'accessibility', /\bdisabled acc(ess)?\b|\bwheelchair\b|\bada (access|compliance|ramp)\b/],
   ['unpermitted_work', 'unpermitted work',
     /\bw(ithout|\/o)( a| any)? permits?\b|\bno permits?\b|\bunpermitted\b|\bnot permitted\b|\billegal (retaining wall|construction|addition|work)\b/],
-  ['safety', 'fire / safety hazards', /\bfire\b|\bsmoke detectors?\b|\bexits?\b|\bdangerous\b|\bhazard(s|ous)?\b|\bcarbon monoxide\b|\bgas leak\b/],
+  ['construction', 'construction disruption',
+    /\bconstruction\b|\bnois(e|y)\b|\bjackhammer(s|ing)?\b|\bdemolition\b|\b[4-7] ?(am|a\.m\.)|\b(9|10|11) ?(pm|p\.m\.)/],
 ];
 // Negated phrases that would otherwise match ("free of any visible hazards").
 const NEGATIONS = /\b(free of|no|without)( any)?( visible| obvious)? hazards?\b/g;
@@ -323,16 +350,49 @@ export function redFlags(complaints) {
       .sort((a, b) => a.form - b.form || b.date.localeCompare(a.date))
       .slice(0, 2)
       .map((c) => ({ date: c.date, description: excerpt(c.text, re) }));
-    flags.push({
+    const flag = {
       category,
       label,
       count: hits.length,
       latest_date: hits.map((c) => c.date).sort().at(-1) || null,
       years: yearsText(hits.map((c) => c.date)),
       examples,
-    });
+    };
+    // Which complaints raised it (not serialized): lets the verdict skip a flag that only repeats one already shown.
+    Object.defineProperty(flag, 'hits', { value: new Set(hits.map((c) => c.date + c.text)) });
+    flags.push(flag);
   }
-  return flags;
+  // Illegal units lead, then anything from the last two years (most recent first), then the rest by severity.
+  const recent = (f) => f.latest_date && Date.now() - new Date(f.latest_date) < 730 * 24 * 3600 * 1000;
+  return flags
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => (b.f.category === 'illegal_units') - (a.f.category === 'illegal_units')
+      || recent(b.f) - recent(a.f)
+      || (recent(a.f) ? String(b.f.latest_date).localeCompare(String(a.f.latest_date)) : a.i - b.i))
+    .map(({ f }) => f);
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// "elevator outages (2008–2026, latest Sep 2026)" when the latest complaint is from the past year.
+function flagText(f, now = new Date()) {
+  const d = new Date(f.latest_date);
+  const recent = f.latest_date && now - d < 365 * 24 * 3600 * 1000;
+  const latest = `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  return `${f.label} (${recent && f.years !== String(d.getUTCFullYear()) ? `${f.years}, latest ${latest}` : recent ? latest : f.years})`;
+}
+
+// Up to three flags for the verdict, skipping any raised only by complaints an earlier flag already covers.
+function verdictFlags(flags, n = 3) {
+  const shown = [];
+  const seen = new Set();
+  for (const f of flags) {
+    if (shown.length === n) break;
+    if (f.hits && [...f.hits].every((h) => seen.has(h))) continue;
+    shown.push(f);
+    f.hits?.forEach((h) => seen.add(h));
+  }
+  return shown;
 }
 
 async function getComplaints(building, number) {
@@ -362,6 +422,8 @@ async function getComplaints(building, number) {
     total: all.length,
     problems: all.filter((c) => !c.routine).length,
     open: all.filter((c) => c.status === 'Active').length,
+    open_since: all.filter((c) => c.status === 'Active').map((c) => c.date).filter(Boolean).sort()[0] || null,
+    open_items: all.filter((c) => c.status === 'Active').slice(0, 3).map((c) => ({ date: c.date, description: truncate(c.text, 160) })),
     latest: all.slice(0, 3).map((c) => ({ date: c.date, status: c.status, description: truncate(c.text, 140) })),
     red_flags: redFlags(all),
   };
@@ -397,7 +459,7 @@ function softStoryText(ss) {
 
 // ---------- Public API ----------
 
-export async function checkAddress(address) {
+export async function checkAddress(address, { sqft } = {}) {
   const address_query = String(address ?? '').trim();
   const notFound = { address_query, found: false, verdict: 'Address not found in SF property records.' };
   const addr = parseAddress(address_query);
@@ -420,6 +482,7 @@ export async function checkAddress(address) {
   const b = summarize(rows);
   const rent_control = rentControl(b);
   const unit_check = unitCheck(parseUnit(address_query), b.units, b.isCondo);
+  const size_check = sizeCheck(Number(sqft) || parseSqft(address_query), b.building_sqft, b.units, b.isCondo);
 
   const [complaintsRes, softRes] = await Promise.allSettled([
     // One retry: data.sf.gov occasionally stalls on a cold query, and a missing complaint history hides the red flags.
@@ -434,10 +497,11 @@ export async function checkAddress(address) {
   // Verdict: short and demo-ready.
   const parts = [];
   if (unit_check.flag) parts.push(`⚠ Possible unwarranted unit: listing says ${parseUnit(address_query).label}, city shows ${b.units} legal units.`);
-  const clean = !unit_check.flag && complaints.problems === 0 && !/⚠/.test(softStoryText(soft_story));
+  if (size_check.flag) parts.push(`⚠ Size looks inflated: listing says ${size_check.claimed_sqft} sq ft, city records suggest under ${size_check.avg_unit_sqft_incl_common}.`);
+  const clean = !unit_check.flag && !size_check.flag && complaints.problems === 0 && !/⚠/.test(softStoryText(soft_story));
   parts.push(`${clean ? '✅ ' : ''}${rentLabel(rent_control, b.year_built)} ${b.units} unit${b.units === 1 ? '' : 's'}.`);
   if (red_flags.length) {
-    parts.push(`⚠ Red flags: ${red_flags.slice(0, 3).map((f) => `${f.label} (${f.years})`).join(', ')}.`);
+    parts.push(`⚠ Red flags: ${verdictFlags(red_flags).map((f) => flagText(f)).join(', ')}.`);
   } else if (complaints.problems === 0) {
     parts.push('No problem complaints on record.');
   } else if (complaints.problems === null) {
@@ -445,7 +509,13 @@ export async function checkAddress(address) {
   } else {
     parts.push(`${complaints.problems} complaint${complaints.problems === 1 ? '' : 's'} on record, no red flags.`);
   }
-  if (complaints.open) parts.push(`Open complaints: ${complaints.open}.`);
+  if (complaints.open) {
+    const since = complaints.open_since?.slice(0, 4);
+    const old = since && new Date().getFullYear() - Number(since) >= 2;
+    parts.push(old
+      ? `⚠ ${complaints.open} complaint${complaints.open === 1 ? '' : 's'} open since ${since}, never closed.`
+      : `Open complaints: ${complaints.open}.`);
+  }
   const verdict = parts.join(' ') + softStoryText(soft_story);
 
   return {
@@ -459,6 +529,7 @@ export async function checkAddress(address) {
     zoning: b.zoning,
     rent_control,
     unit_check,
+    size_check,
     complaints,
     red_flags,
     soft_story,
