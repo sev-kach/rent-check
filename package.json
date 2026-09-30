@@ -1,0 +1,7 @@
+{
+  "name": "rent-check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paid (x402 on Solana) API: is this San Francisco building rent-controlled?"
+}
