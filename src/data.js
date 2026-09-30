@@ -421,7 +421,11 @@ export async function checkAddress(address) {
   const rent_control = rentControl(b);
   const unit_check = unitCheck(parseUnit(address_query), b.units, b.isCondo);
 
-  const [complaintsRes, softRes] = await Promise.allSettled([getComplaints(b, addr.number), getSoftStory(b)]);
+  const [complaintsRes, softRes] = await Promise.allSettled([
+    // One retry: data.sf.gov occasionally stalls on a cold query, and a missing complaint history hides the red flags.
+    getComplaints(b, addr.number).catch(() => getComplaints(b, addr.number)),
+    getSoftStory(b),
+  ]);
   const { red_flags = [], ...complaints } = complaintsRes.status === 'fulfilled'
     ? complaintsRes.value
     : { total: null, problems: null, open: null, latest: [], error: `DBI complaints unavailable: ${complaintsRes.reason?.message}` };

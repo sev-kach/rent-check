@@ -29,6 +29,8 @@ if (MODE === "claude") {
 // ---------------- HTTP ----------------
 
 const app = express();
+// Only answer requests addressed to localhost (blocks DNS-rebinding pages from driving the wallet).
+app.use((req, res, next) => (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.host || "") ? next() : res.status(403).end()));
 app.use(express.json());
 app.use(express.static(path.join(here, "..", "src", "demo-ui")));
 
@@ -50,10 +52,13 @@ app.get("/api/balance", async (req, res) => {
 
 let busy = false;
 
-// Streams one question as Server-Sent Events. GET ?q=... or POST {q}. The UI uses fetch() (no EventSource auto-reconnect,
+// Streams one question as Server-Sent Events. POST {q} with content-type application/json. The UI uses fetch() (no EventSource auto-reconnect,
 // which could re-run a paid call).
 async function ask(req, res) {
-  const q = String(req.body?.q ?? req.query.q ?? "").trim().slice(0, 500);
+  // JSON POST only: a cross-site page can't send one without a CORS preflight (which this server never approves),
+  // so another tab in the browser can't make this wallet pay.
+  if (!req.is("application/json")) return res.status(415).json({ error: "POST JSON: {\"q\": \"...\"}" });
+  const q = String(req.body?.q ?? "").trim().slice(0, 500);
   res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
   res.flushHeaders();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -135,7 +140,6 @@ function friendly(err) {
   return { kind: "unknown", message: "Something went wrong.", detail: err?.message };
 }
 
-app.get("/api/ask", ask);
 app.post("/api/ask", ask);
 
 // Bind to localhost only: this server can spend the buyer wallet's USDC.

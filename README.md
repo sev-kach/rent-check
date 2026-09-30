@@ -41,21 +41,30 @@ You are charged only for a successful answer. A missing address (400) or unreach
 
 ```json
 {
-  "address_query": "1423 Kearny St",
+  "address_query": "1665 Chestnut St",
   "found": true,
-  "matched_address": "1413-1423 Kearny St",
-  "parcel": "0104008",
-  "year_built": 1906,
-  "units": 6,
+  "matched_address": "1665 Chestnut St",
+  "parcel": "0495008",
+  "year_built": 1950,
+  "units": 24,
   "use": "Multi-Family Residential",
-  "zoning": "RH3",
-  "rent_control": { "status": "likely", "reason": "..." },
-  "complaints": { "total": 10, "open": 0, "latest": [{ "date": "...", "status": "Not Active", "description": "..." }] },
-  "verdict": "Rent-controlled: likely. Units: 6. Open complaints: none.",
-  "sources": ["SF Assessor secured roll 2025 (wv5m-vpq2)", "DBI complaints (gm2e-bten)"],
+  "zoning": "RM2",
+  "rent_control": { "status": "likely", "reason": "Built in 1950, before June 13, 1979, with 24 units: likely covered by the SF Rent Ordinance ..." },
+  "unit_check": { "claimed_unit": null, "legal_units": 24, "flag": false, "note": "No unit in the query." },
+  "complaints": { "total": 15, "problems": 13, "open": 0, "latest": [{ "date": "2026-07-21", "status": "Not Active", "description": "The building has wildly inconsistent temperatures. ..." }] },
+  "red_flags": [
+    { "category": "mold", "label": "mold", "count": 3, "latest_date": "2013-03-21", "years": "2013",
+      "examples": [{ "date": "2013-03-18", "description": "Extreme amounts of mold in vacant unit #107 not cleaned properly and safely." }] },
+    { "category": "elevator", "label": "elevator outages", "count": 3, "latest_date": "2024-06-07", "years": "2022–2024", "examples": ["..."] }
+  ],
+  "soft_story": { "on_list": true, "status": "Work Complete, CFC Issued", "retrofit_complete": true, "tier": "2" },
+  "verdict": "Rent-controlled: likely. 24 units. ⚠ Red flags: mold (2013), elevator outages (2022–2024), heating / hot water (2000, 2026). Soft-story retrofit: complete.",
+  "sources": ["SF Assessor secured roll 2025 (wv5m-vpq2)", "DBI complaints (gm2e-bten)", "Soft-story retrofit program (beah-shgi)"],
   "disclaimer": "Informational, not legal advice."
 }
 ```
+
+Full field list: [CONTRACT.md](CONTRACT.md). Phone numbers and emails in complaint text are replaced with `[phone]` / `[email]`.
 
 `rent_control.status` is one of:
 
@@ -66,7 +75,7 @@ You are charged only for a successful answer. A missing address (400) or unreach
 
 If the address is not found, the response is `{"address_query": "...", "found": false, "verdict": "Address not found in SF property records."}`.
 
-Data comes live from `data.sf.gov` (Socrata): Assessor roll `wv5m-vpq2` and DBI complaints `gm2e-bten`. Neither needs a token.
+Data comes live from `data.sf.gov` (Socrata): Assessor roll `wv5m-vpq2`, DBI complaints `gm2e-bten` and the soft-story retrofit list `beah-shgi`. None needs a token.
 
 ## Demo
 
