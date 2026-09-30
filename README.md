@@ -68,6 +68,45 @@ If the address is not found, the response is `{"address_query": "...", "found": 
 
 Data comes live from `data.sf.gov` (Socrata): Assessor roll `wv5m-vpq2` and DBI complaints `gm2e-bten`. Neither needs a token.
 
+## Demo
+
+A local web app for the screen recording and the live pitch. An agent chat is on the left, the x402 protocol steps animate live in the middle, and the purchased verdict card is on the right. The footer shows the agent wallet's USDC balance before and after each call.
+
+```bash
+npm run demo:web                                  # http://localhost:3000, pays the live Vercel API
+API_URL=http://localhost:4021 npm run demo:web    # or pay a local `npm start` instead
+```
+
+It runs **only on your laptop** because it signs payments with `BUYER_PRIVATE_KEY` from `.env`. It listens on 127.0.0.1 and is not part of the Vercel deployment. It pays only on Solana devnet, even though the API also accepts mainnet.
+
+- **Agent: Claude**, used when `ANTHROPIC_API_KEY` is in `.env`. Claude (`claude-sonnet-5-5`, override with `CLAUDE_MODEL`) gets one tool, `check_rent_status(address)`. The system prompt tells it the tool costs $0.05 per call and to use it once per address. The tool runs the x402 payment, and Claude then writes a 3 to 5 sentence answer for the renter. The server caps it at 2 paid calls per question.
+- **Agent: script**, used when there is no key (or with `AGENT_MODE=script`). It takes the address out of the question, calls the paid API directly and fills in a templated answer. The badge in the top right shows which mode is running.
+
+Other settings: `DEMO_PORT` (default 3000) and `SOLANA_RPC_URL`. The code is in `scripts/demo-web.js` (server, SSE stream), `scripts/demo-agent.js` (Claude tool loop and script mode), `scripts/x402-client.js` (the x402 buyer, shared with `npm run demo`) and `src/demo-ui/` (the page).
+
+### Demo cases (one click each)
+
+| Button | City records | The story |
+|---|---|---|
+| **1665 Chestnut St** (Marina) | Built 1950, 24 units, rent-controlled, soft-story retrofit complete. 15 DBI complaints: mold in vacant unit #107 (2013), elevator out 2022–2024, "wildly inconsistent temperatures" (July 2026), no heat (2000). | "It looks perfect in the listing. The agent pays 5 cents and finds mold and a dead elevator." |
+| **372 7th Ave Apt 5** (Inner Richmond) | Built 1993, 3 legal units (NC3, store with flats above). Not under SF rent control; state AB 1482 cap likely. | "The listing says Apt 5. The city says the building has 3 legal units." |
+| **1824 Anza St** (Inner Richmond) | Built 1912, 3 units, rent-controlled, only one routine inspection on file. | The green light: the tool doesn't flag everything. |
+
+### 60-second recording script
+
+Before recording: run `npm run demo:web`, open http://localhost:3000, put the browser in full screen (View, then Enter Full Screen) at 1920x1080, and click each case once to check that it works (each click spends $0.05 of devnet USDC). Reload the page to start clean.
+
+| Time | Do | Say |
+|---|---|---|
+| 0:00 | Idle page. Point at the wallet in the footer. | "Renters ask AI agents about apartments, but the facts are buried in city records. rent-check sells them to any agent for 5 cents a call, with no API key and no account." |
+| 0:08 | Click **1665 Chestnut St**. | "This listing says rent-controlled and retrofitted. The agent calls our API and gets HTTP 402, Payment Required: 5 cents in USDC on Solana." |
+| 0:15 | Point at steps 2 and 3, then the verdict card. | "It signs, pays, and the data comes back. That's a real Solana transaction. Rent-controlled, yes, but mold in unit 107, and the elevator was out from 2022 to 2024." |
+| 0:28 | Click **372 7th Ave Apt 5**. Point at the red banner. | "The listing says Apt 5. The city says the building has 3 legal units. That's a question to ask before you sign." |
+| 0:40 | Click **1824 Anza St**. | "And it doesn't flag everything: built 1912, rent-controlled, clean record." |
+| 0:48 | Click the tx link in step 2 (Solana Explorer opens), then come back. Point at the balance. | "Every answer is paid on-chain, one call at a time. Agents pay for data, and renters get the truth. That's rent-check." |
+
+For the live presentation, if the venue network is unreliable: `AGENT_MODE=script` skips Claude, and `API_URL=http://localhost:4021` with `npm start` skips Vercel. Payments still need Solana devnet and the x402.org facilitator.
+
 ## Deploy (Vercel)
 
 `api/index.js` exports the Express app, and `vercel.json` routes every path to it.

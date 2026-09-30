@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rent-check demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">rc</div>
+      <div>
+        <div class="name">rent-check</div>
+        <div class="tag">City records for renters, sold to AI agents at <b>$0.05</b> a call · x402 on Solana</div>
+      </div>
+    </div>
+    <div class="badges">
+      <span class="badge" id="mode-badge">Agent: …</span>
+      <span class="badge net">Solana devnet</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Left: the agent chat -->
+    <section class="panel chat">
+      <div class="panel-title">AI agent</div>
+      <div class="messages" id="messages">
+        <div class="hint" id="hint">
+          Ask about a San Francisco apartment. The agent buys the building's city records for 5 cents, then answers.
+        </div>
+      </div>
+      <div class="quick" id="quick">
+        <button data-q="Looks perfect in the listing: 1665 Chestnut St, rent-controlled and retrofitted. Anything I should know before I sign?">1665 Chestnut St <small>Marina</small></button>
+        <button data-q="I'm about to rent 372 7th Ave Apt 5 — anything I should know?">372 7th Ave Apt 5 <small>Inner Richmond</small></button>
+        <button data-q="Is 1824 Anza St a safe bet to rent?">1824 Anza St <small>Inner Richmond</small></button>
+      </div>
+      <form class="ask" id="ask">
+        <input id="q" autocomplete="off" placeholder="I'm about to rent 372 7th Ave Apt 5 — anything I should know?" />
+        <button type="submit" id="send">Ask</button>
+      </form>
+    </section>
+
+    <!-- Middle: live x402 protocol timeline -->
+    <section class="panel right">
+      <div class="panel-title">x402 protocol, live <span class="sub" id="api-url"></span></div>
+      <ol class="timeline" id="timeline">
+        <li class="step" id="s-tool" hidden>
+          <div class="head"><div class="dot">0</div><span class="what">Claude picks a paid tool</span></div>
+          <span class="pill grey" id="s-tool-pill">thinking</span>
+          <div class="detail mono" id="s-tool-detail"></div>
+        </li>
+        <li class="step" id="s-402">
+          <div class="head"><div class="dot">1</div><span class="what">Ask for the data</span></div>
+          <span class="pill grey" id="s-402-pill">waiting</span>
+          <div class="req mono" id="s-402-what">GET /check</div>
+          <div class="kv" id="s-402-detail"></div>
+        </li>
+        <li class="step" id="s-pay">
+          <div class="head"><div class="dot">2</div><span class="what">Sign &amp; pay <b id="s-pay-amt">0.05 USDC</b></span></div>
+          <span class="pill grey" id="s-pay-pill">waiting</span>
+          <div class="kv" id="s-pay-detail"></div>
+        </li>
+        <li class="step" id="s-200">
+          <div class="head"><div class="dot">3</div><span class="what">Get the records</span></div>
+          <span class="pill grey" id="s-200-pill">waiting</span>
+          <div class="detail" id="s-200-detail"></div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- Right: the verdict card -->
+    <section class="panel result">
+      <div class="panel-title">What the agent bought</div>
+      <div class="verdict-wrap" id="verdict"><div class="empty">The verdict from city records appears here once the agent has paid.</div></div>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <div class="wallet">
+      <span class="label">Agent wallet</span>
+      <a id="buyer" class="mono" target="_blank" rel="noopener"></a>
+      <span class="bal"><span id="bal-before">–</span><span id="bal-arrow" hidden> → <span id="bal-after"></span> <span class="delta" id="bal-delta"></span></span> <span class="unit">USDC</span></span>
+    </div>
+    <div class="fine">No API key, no account: the agent pays per call over HTTP 402. Informational, not legal advice.</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
