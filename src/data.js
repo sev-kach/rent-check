@@ -313,17 +313,13 @@ function yearsText(dates) {
   return `${ys[0]}–${ys.at(-1)}`;
 }
 
-// Complaints that describe people (tenants' age, health, eviction) still count, but are never quoted.
-const PERSONAL = /\b(elderly|hoarder|hoarding|evicted|eviction|deceased|died|disabled|mental|drug|homeless)\b/i;
-
 export function redFlags(complaints) {
   const flags = [];
   for (const [category, label, re] of RED_FLAGS) {
     const hits = complaints.filter((c) => !c.routine && re.test(c.text.toLowerCase().replace(NEGATIONS, '')));
     if (!hits.length) continue;
     // Examples: most recent first, preferring plain-language complaints over 311 form dumps.
-    const examples = hits
-      .filter((c) => !PERSONAL.test(c.text))
+    const examples = [...hits]
       .sort((a, b) => a.form - b.form || b.date.localeCompare(a.date))
       .slice(0, 2)
       .map((c) => ({ date: c.date, description: excerpt(c.text, re) }));
