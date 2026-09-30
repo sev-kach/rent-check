@@ -1,4 +1,4 @@
-// Rent-check API: GET /check?address=... costs $0.05 USDC on Solana devnet, paid via x402 (v2).
+// Rent-check API: GET /check?address=... costs $0.05 USDC on Solana (devnet or mainnet), paid via x402 (v2).
 import "dotenv/config";
 import express from "express";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,10 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 export const NETWORK = process.env.NETWORK || "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"; // Solana devnet
 export const PRICE = "$0.05";
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://x402.org/facilitator";
+// Mainnet lets real agent wallets (e.g. `pay claude` from pay.sh) pay with real USDC. Set MAINNET=0 to turn off.
+export const MAINNET_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const MAINNET = process.env.MAINNET !== "0";
+const MAINNET_FACILITATOR_URL = process.env.MAINNET_FACILITATOR_URL || "https://facilitator.payai.network";
 const PAY_TO = process.env.SELLER_ADDRESS;
 if (!PAY_TO) throw new Error("SELLER_ADDRESS is not set. Run `npm run wallets` first (or set it in the environment).");
 
@@ -22,8 +26,13 @@ try {
   console.warn("[rent-check] src/data.js not found, serving FAKE data");
 }
 
-const facilitator = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
-const resourceServer = new x402ResourceServer(facilitator).register(NETWORK, new ExactSvmScheme());
+const facilitators = [new HTTPFacilitatorClient({ url: FACILITATOR_URL })];
+if (MAINNET) facilitators.push(new HTTPFacilitatorClient({ url: MAINNET_FACILITATOR_URL }));
+const resourceServer = new x402ResourceServer(facilitators).register(NETWORK, new ExactSvmScheme());
+if (MAINNET) resourceServer.register(MAINNET_NETWORK, new ExactSvmScheme());
+
+const accepts = [{ scheme: "exact", price: PRICE, network: NETWORK, payTo: PAY_TO, maxTimeoutSeconds: 120 }];
+if (MAINNET) accepts.push({ scheme: "exact", price: PRICE, network: MAINNET_NETWORK, payTo: PAY_TO, maxTimeoutSeconds: 120 });
 
 export const app = express();
 
@@ -31,7 +40,7 @@ app.get("/", (req, res) =>
   res.json({
     name: "rent-check",
     about: "Is this San Francisco building rent-controlled? Pay per call with x402.",
-    endpoints: { "GET /health": "free", "GET /check?address=1423 Kearny St": `${PRICE} USDC, ${NETWORK}` },
+    endpoints: { "GET /health": "free", "GET /check?address=1423 Kearny St": `${PRICE} USDC via x402 on ${[NETWORK, MAINNET && MAINNET_NETWORK].filter(Boolean).join(" or ")}` },
   }),
 );
 
@@ -44,7 +53,7 @@ app.use(
   paymentMiddleware(
     {
       "GET /check": {
-        accepts: [{ scheme: "exact", price: PRICE, network: NETWORK, payTo: PAY_TO, maxTimeoutSeconds: 120 }],
+        accepts,
         description: "Rent-control verdict for a San Francisco address (Assessor roll + DBI complaints)",
         mimeType: "application/json",
       },
@@ -72,7 +81,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   const port = Number(process.env.PORT) || 4021;
   app.listen(port, () => {
     console.log(`rent-check listening on http://localhost:${port}`);
-    console.log(`  paywall: ${PRICE} USDC on ${NETWORK} -> ${PAY_TO}`);
-    console.log(`  facilitator: ${FACILITATOR_URL}`);
+    console.log(`  paywall: ${PRICE} USDC on ${accepts.map((a) => a.network).join(" | ")} -> ${PAY_TO}`);
+    console.log(`  facilitators: ${FACILITATOR_URL}${MAINNET ? ", " + MAINNET_FACILITATOR_URL : ""}`);
   });
 }
