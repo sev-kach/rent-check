@@ -32,7 +32,11 @@ class RetryingFacilitatorClient extends HTTPFacilitatorClient {
   async getSupported() {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await super.getSupported();
+        // The client's own timeout is 90s; don't let one hung connection stall a request that long.
+        return await Promise.race([
+          super.getSupported(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timed out after 6s")), 6000)),
+        ]);
       } catch (err) {
         if (attempt >= 4) throw err;
         console.warn(`[rent-check] facilitator /supported failed (attempt ${attempt}), retrying:`, err.message);
@@ -42,8 +46,8 @@ class RetryingFacilitatorClient extends HTTPFacilitatorClient {
   }
 }
 
-const facilitators = [new RetryingFacilitatorClient({ url: FACILITATOR_URL })];
-if (MAINNET) facilitators.push(new RetryingFacilitatorClient({ url: MAINNET_FACILITATOR_URL }));
+const facilitators = [new RetryingFacilitatorClient({ url: FACILITATOR_URL, timeoutMs: 25000 })];
+if (MAINNET) facilitators.push(new RetryingFacilitatorClient({ url: MAINNET_FACILITATOR_URL, timeoutMs: 25000 }));
 const resourceServer = new x402ResourceServer(facilitators).register(NETWORK, new ExactSvmScheme());
 if (MAINNET) resourceServer.register(MAINNET_NETWORK, new ExactSvmScheme());
 
@@ -52,13 +56,35 @@ if (MAINNET) accepts.push({ scheme: "exact", price: PRICE, network: MAINNET_NETW
 
 export const app = express();
 
-app.get("/", (req, res) =>
-  res.json({
-    name: "rent-check",
-    about: "Is this San Francisco building rent-controlled? Pay per call with x402.",
-    endpoints: { "GET /health": "free", "GET /check?address=1423 Kearny St": `${PRICE} USDC via x402 on ${[NETWORK, MAINNET && MAINNET_NETWORK].filter(Boolean).join(" or ")}` },
-  }),
-);
+const ABOUT = {
+  name: "rent-check",
+  about: "Is this San Francisco building rent-controlled? Pay per call with x402.",
+  endpoints: { "GET /health": "free", "GET /check?address=300 Anzavista Ave": `${PRICE} USDC via x402 on ${[NETWORK, MAINNET && MAINNET_NETWORK].filter(Boolean).join(" or ")}` },
+  video: "https://www.youtube.com/watch?v=gvvUIVtCrL4",
+  code: "https://github.com/sev-kach/rent-check",
+};
+
+// Agents get JSON; a person opening the link in a browser gets a one-screen explanation.
+const HOME_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rent-check</title><style>
+body{margin:0;background:#0e1319;color:#e8edf2;font:17px/1.55 system-ui,-apple-system,sans-serif}
+main{max-width:720px;margin:0 auto;padding:48px 20px}h1{font-size:40px;margin:0 0 4px}.sub{color:#93a1b2;margin:0 0 28px}
+a{color:#5bd17a}code,pre{font:14px ui-monospace,Menlo,monospace;background:#171e27;border:1px solid #263140;border-radius:8px}
+code{padding:2px 6px}pre{padding:14px;overflow-x:auto;white-space:pre-wrap}.links a{display:inline-block;margin:0 16px 8px 0;font-weight:600}
+</style></head><body><main>
+<h1>rent-check</h1><p class="sub">City records for renters, sold to AI agents for 5 cents a call.</p>
+<p class="links"><a href="${ABOUT.video}">▶ Demo video</a><a href="${ABOUT.code}">GitHub</a></p>
+<p>An AI agent sends a San Francisco address, pays <b>$0.05 in USDC on Solana</b> via <a href="https://x402.org">x402</a>, and gets back:
+is the building rent-controlled, how many legal units it has, how big the units really are, and red flags from city building complaints.
+No account, no API key: the agent pays per request from its own wallet.</p>
+<p>Try it: this request answers <b>402 Payment Required</b> until an agent pays.</p>
+<pre>GET /check?address=300 Anzavista Ave</pre>
+<p>With a wallet-enabled agent (<a href="https://github.com/solana-foundation/pay">pay.sh</a>, Solana devnet):</p>
+<pre>pay curl "${"https://rent-check-eight.vercel.app"}/check?address=300%20Anzavista%20Ave"</pre>
+<p class="sub">Data: SF Assessor roll, DBI complaints, soft-story retrofit list (DataSF). Informational, not legal advice.</p>
+</main></body></html>`;
+
+app.get("/", (req, res) => (req.accepts(["json", "html"]) === "html" ? res.type("html").send(HOME_HTML) : res.json(ABOUT)));
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
@@ -135,3 +161,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     console.log(`  facilitators: ${FACILITATOR_URL}${MAINNET ? ", " + MAINNET_FACILITATOR_URL : ""}`);
   });
 }
+
+// Vercel may load this file directly as a function (e.g. for "/"), which needs a default export.
+export default app;
