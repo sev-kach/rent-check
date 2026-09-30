@@ -4,3 +4,4 @@ node_modules/
 wallets/
 .vercel
 !.env.example
+.env*

@@ -1,5 +1,8 @@
 # rent-check
 
+**Live API (Solana devnet):** https://rent-check-eight.vercel.app — `GET /check?address=1423%20Kearny%20St` returns HTTP 402 until paid ($0.05 USDC via x402).
+Try it: `API_URL=https://rent-check-eight.vercel.app npm run demo -- "1423 Kearny St"`
+
 **Is this San Francisco building rent-controlled?** A pay-per-call API for AI agents. An agent sends an address, pays $0.05 in USDC via [x402](https://x402.org) on Solana devnet, and gets back a verdict with the evidence behind it.
 
 Why would an agent pay for this instead of scraping it itself? The public data is there, but it is awkward to use. The Assessor roll does not say "1423 Kearny St". It says `1423 1413 KEARNY              ST0000`: a house-number range with the high number first, a padded street name, a suffix code and a unit number. Numbered streets appear both as `03RD AV` and as `3RD ST`, and a condo tower is 112 separate parcels. A good answer needs two datasets (the Assessor secured roll and the DBI complaints), and then SF's rent rules on top: buildings first occupied after June 1979 are not covered, and single-family homes and condos are exempt from rent-increase limits under Costa-Hawkins. rent-check handles all of this and returns one clean JSON answer for five cents, without an API key or an account.
