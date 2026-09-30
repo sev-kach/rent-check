@@ -49,6 +49,38 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 // Express answers HEAD with the GET handler, but the paywall only guards GET: block HEAD so /check never runs unpaid.
 app.head("/check", (req, res) => res.set("Allow", "GET").status(405).end());
 
+// x402 puts the settlement (tx signature) only in the PAYMENT-RESPONSE header, which many agent tools never show.
+// Copy it into the JSON body as `payment_receipt`. Registered before the paywall so it wraps res.end outermost
+// and runs when the paywall replays the buffered response, after settlement has set the header.
+app.use("/check", (req, res, next) => {
+  const end = res.end.bind(res);
+  res.end = function (chunk, ...rest) {
+    const header = res.getHeader("PAYMENT-RESPONSE") || res.getHeader("X-PAYMENT-RESPONSE");
+    if (header && chunk && res.statusCode === 200 && String(res.getHeader("Content-Type")).includes("json")) {
+      try {
+        const settle = JSON.parse(Buffer.from(String(header), "base64").toString("utf8"));
+        const body = JSON.parse(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+        const devnet = String(settle.network).includes("EtWTRABZaYq6iMfeYKouRu166VU2xqa1");
+        body.payment_receipt = {
+          paid: `${PRICE.replace("$", "")} USDC`,
+          network: devnet ? "Solana devnet" : "Solana mainnet",
+          transaction: settle.transaction,
+          payer: settle.payer,
+          pay_to: PAY_TO,
+          explorer: `https://explorer.solana.com/tx/${settle.transaction}${devnet ? "?cluster=devnet" : ""}`,
+        };
+        if (typeof body.verdict === "string") body.verdict += ` Paid ${body.payment_receipt.paid} on ${body.payment_receipt.network}, receipt: ${body.payment_receipt.explorer}`;
+        chunk = JSON.stringify(body);
+        res.setHeader("Content-Length", Buffer.byteLength(chunk));
+      } catch {
+        // Leave the response untouched if either side isn't the JSON we expect.
+      }
+    }
+    return end(chunk, ...rest);
+  };
+  next();
+});
+
 app.use(
   paymentMiddleware(
     {
