@@ -37,6 +37,9 @@ app.get("/", (req, res) =>
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+// Express answers HEAD with the GET handler, but the paywall only guards GET: block HEAD so /check never runs unpaid.
+app.head("/check", (req, res) => res.set("Allow", "GET").status(405).end());
+
 app.use(
   paymentMiddleware(
     {

@@ -1,0 +1,5 @@
+.env
+.env.*
+!.env.example
+wallets/
+node_modules/

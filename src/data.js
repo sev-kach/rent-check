@@ -53,7 +53,9 @@ const ORDINALS = (() => {
 // "1423 kearny street" -> { number: 1423, streets: ["KEARNY"], suffix: "ST" }
 // streets holds spelling variants: the roll writes numbered streets both as "03RD" and "3RD".
 export function parseAddress(input) {
-  let s = String(input || '').split(',')[0].toUpperCase();
+  let s = String(input || '').split(',')[0].toUpperCase().trim();
+  // "... St San Francisco CA 94133" / "... St CA 94133" without commas (keep "100 California")
+  s = s.replace(/\s+(SAN FRANCISCO|SF)\b.*$/, '').replace(/(\s+CA(LIFORNIA)?)?\s+\d{5}(-\d{4})?$/, '');
   s = s.replace(/\s(#|APT\.?|UNIT|STE\.?|SUITE)\s*\S+$/, ''); // drop unit
   s = s.replace(/[.]/g, '').replace(/\s+/g, ' ').trim();
   const m = s.match(/^(\d+)[A-Z]?(?:\s*-\s*\d+[A-Z]?)?\s+(.+)$/);
